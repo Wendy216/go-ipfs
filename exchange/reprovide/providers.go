@@ -5,6 +5,7 @@ import (
 
 	pin "github.com/ipfs/go-ipfs/pin"
 
+	"github.com/ipfs/go-ipfs/thirdparty/streaming-cid-set"
 	ipld "gx/ipfs/QmUSyMZ8Vt4vTZr5HdDEgEfpwAXfQRuDdfCFTt7XBzhxpQ/go-ipld-format"
 	merkledag "gx/ipfs/QmYxX4VfVcxmfsj8U6T5kVtFvHsSidy9tmPyPTW5fy7H3q/go-merkledag"
 	cid "gx/ipfs/Qmdu2AYUV7yMoVBQPxXNfe7FJcdx16kYtsx6jAPKWQYF1y/go-cid"
@@ -29,7 +30,7 @@ func NewPinnedProvider(pinning pin.Pinner, dag ipld.DAGService, onlyRoots bool) 
 		outCh := make(chan *cid.Cid)
 		go func() {
 			defer close(outCh)
-			for c := range set.new {
+			for c := range set.New {
 				select {
 				case <-ctx.Done():
 					return
@@ -43,21 +44,22 @@ func NewPinnedProvider(pinning pin.Pinner, dag ipld.DAGService, onlyRoots bool) 
 	}
 }
 
-func pinSet(ctx context.Context, pinning pin.Pinner, dag ipld.DAGService, onlyRoots bool) (*streamingSet, error) {
-	set := newStreamingSet()
+func pinSet(ctx context.Context, pinning pin.Pinner, dag ipld.DAGService, onlyRoots bool) (*streamingset.StreamingSet, error) {
+	set := streamingset.NewStreamingSet()
 
 	go func() {
-		defer close(set.new)
+		ctx, cancel := context.WithCancel(ctx)
+		defer cancel()
 
 		for _, key := range pinning.DirectKeys() {
-			set.add(key)
+			set.Visitor(ctx)(key)
 		}
 
 		for _, key := range pinning.RecursiveKeys() {
-			set.add(key)
+			set.Visitor(ctx)(key)
 
 			if !onlyRoots {
-				err := merkledag.EnumerateChildren(ctx, merkledag.GetLinksWithDAG(dag), key, set.add)
+				err := merkledag.EnumerateChildren(ctx, merkledag.GetLinksWithDAG(dag), key, set.Visitor(ctx))
 				if err != nil {
 					log.Errorf("reprovide indirect pins: %s", err)
 					return
@@ -67,28 +69,4 @@ func pinSet(ctx context.Context, pinning pin.Pinner, dag ipld.DAGService, onlyRo
 	}()
 
 	return set, nil
-}
-
-type streamingSet struct {
-	set *cid.Set
-	new chan *cid.Cid
-}
-
-// NewSet initializes and returns a new Set.
-func newStreamingSet() *streamingSet {
-	return &streamingSet{
-		set: cid.NewSet(),
-		new: make(chan *cid.Cid),
-	}
-}
-
-// add adds a Cid to the set only if it is
-// not in it already.
-func (s *streamingSet) add(c *cid.Cid) bool {
-	if s.set.Visit(c) {
-		s.new <- c
-		return true
-	}
-
-	return false
 }
